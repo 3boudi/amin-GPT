@@ -8,8 +8,8 @@ header('Access-Control-Allow-Headers: Content-Type');
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { http_response_code(200); exit; }
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') { http_response_code(405); echo json_encode(['error' => 'Method not allowed']); exit; }
 
-$API_KEY = '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';
-$API_URL = 'https://integrate.api.nvidia.com/v1/chat/completions';
+$API_KEY = '';
+$API_URL = ';
 $MODEL   = 'google/gemma-3n-e4b-it';
 
 // =============================
