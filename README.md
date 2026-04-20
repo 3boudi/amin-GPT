@@ -13,7 +13,7 @@
 
 ## Screenshot
 
-![amin-GPT Chat Interface](./screenshots/screenshot.png)
+![amin-GPT Chat Interface](./Screenshot2026-04-21002134.png)
 
 > *The main chat interface — dark theme, auto-resizing input, and real-time AI responses.*
 
