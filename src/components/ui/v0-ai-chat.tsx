@@ -109,7 +109,7 @@ export function VercelV0Chat() {
     const [isWaiting, setIsWaiting] = useState(false);
     const [isSidebarOpen, setIsSidebarOpen] = useState(false);
     const [typingState, setTypingState] = useState<{ sessionId: string, index: number, isFinalChunk: boolean } | null>(null);
-    
+
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -152,20 +152,20 @@ export function VercelV0Chat() {
     const updateActiveSessionMessages = (newMessages: Message[]) => {
         if (!activeSessionId) return;
 
-        setSessions(prev => 
+        setSessions(prev =>
             prev.map(s => {
                 if (s.id === activeSessionId) {
                     return { ...s, messages: newMessages, updatedAt: Date.now() };
                 }
                 return s;
-            }).sort((a,b) => b.updatedAt - a.updatedAt)
+            }).sort((a, b) => b.updatedAt - a.updatedAt)
         );
     }
 
     const sendMessage = async (textToSend: string) => {
         if (!textToSend.trim() || isWaiting) return;
         const prompt = textToSend.trim();
-        
+
         let targetSessionId = activeSessionId;
         let freshMessages: Message[] = [];
 
@@ -174,14 +174,14 @@ export function VercelV0Chat() {
             const newId = Date.now().toString();
             // Generate simple title from first ~30 chars
             const title = prompt.length > 30 ? prompt.substring(0, 30) + '...' : prompt;
-            
+
             const newSession: ChatSession = {
                 id: newId,
                 title: title,
                 messages: [{ role: "user" as const, content: prompt }],
                 updatedAt: Date.now()
             };
-            
+
             setSessions(prev => [newSession, ...prev]);
             setActiveSessionId(newId);
             targetSessionId = newId;
@@ -200,21 +200,21 @@ export function VercelV0Chat() {
                 { role: "system", content: SYSTEM_PROMPT },
                 ...freshMessages.map(m => ({ role: m.role, content: m.content }))
             ];
-            
+
             let isComplete = false;
             let loopCount = 0;
-            const MAX_LOOPS = 5;
+            const MAX_LOOPS = 25;
             let aggregatedContent = "";
 
             while (!isComplete && loopCount < MAX_LOOPS) {
                 loopCount++;
-                
+
                 const response = await axios.post(
                     NVIDIA_API_URL,
                     {
                         model: MODEL,
                         messages: apiMessages,
-                        max_tokens: 1024,
+                        max_tokens: 3500,
                         temperature: 0.70,
                         top_p: 0.90,
                         stream: false
@@ -227,16 +227,16 @@ export function VercelV0Chat() {
                         }
                     }
                 );
-                
+
                 if (response.data?.choices && response.data.choices.length > 0) {
                     const choice = response.data.choices[0];
                     aggregatedContent += choice.message.content;
-                    
+
                     const isFinal = choice.finish_reason !== "length";
                     const finalMessages = [...freshMessages, { role: "assistant" as const, content: aggregatedContent }];
-                    
+
                     setTypingState({ sessionId: targetSessionId, index: finalMessages.length - 1, isFinalChunk: isFinal });
-                    setSessions(prev => 
+                    setSessions(prev =>
                         prev.map(s => s.id === targetSessionId ? { ...s, messages: finalMessages, updatedAt: Date.now() } : s)
                     );
 
@@ -295,9 +295,9 @@ export function VercelV0Chat() {
         <div className="flex h-screen w-full bg-[#212121] text-white overflow-hidden selection:bg-purple-600/30">
             {/* Mobile Sidebar Overlay Overlay */}
             {isSidebarOpen && (
-                <div 
-                    className="fixed inset-0 bg-black/60 z-40 md:hidden" 
-                    onClick={() => setIsSidebarOpen(false)} 
+                <div
+                    className="fixed inset-0 bg-black/60 z-40 md:hidden"
+                    onClick={() => setIsSidebarOpen(false)}
                 />
             )}
 
@@ -308,7 +308,7 @@ export function VercelV0Chat() {
             )}>
                 {/* Header Actions */}
                 <div className="p-3">
-                    <button 
+                    <button
                         onClick={startNewChat}
                         className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg hover:bg-[#202123] transition-colors text-sm font-medium text-white/90 justify-between group"
                     >
@@ -359,7 +359,7 @@ export function VercelV0Chat() {
 
             {/* Main Application Window */}
             <div className="flex-1 flex flex-col h-full bg-[#212121] relative min-w-0">
-                
+
                 {/* Mobile Top Header (hidden on Desktop generally, used just for hamburger) */}
                 <div className="md:hidden flex items-center justify-between p-4 sticky top-0 bg-[#212121]/90 backdrop-blur z-30 border-b border-[#2a2a2a]/50">
                     <button onClick={() => setIsSidebarOpen(true)} className="p-2 -ml-2 text-neutral-400 hover:text-white">
@@ -406,19 +406,19 @@ export function VercelV0Chat() {
                                         dir={isArabicText(msg.content) && msg.role === "user" ? "rtl" : "ltr"}
                                         className={cn(
                                             "max-w-[85%] rounded-2xl px-5 py-3.5 text-[15px] whitespace-pre-wrap leading-relaxed transition-all list-disc",
-                                            msg.role === "user" 
+                                            msg.role === "user"
                                                 ? isArabicText(msg.content)
                                                     ? "bg-neutral-100 text-black rounded-tl-sm font-medium text-right"
-                                                    : "bg-neutral-100 text-black rounded-tr-sm font-medium" 
+                                                    : "bg-neutral-100 text-black rounded-tr-sm font-medium"
                                                 : "text-neutral-200"
                                         )}
                                     >
                                         {msg.role === "user" ? (
                                             msg.content
                                         ) : (
-                                            <TypewriterText 
-                                                content={msg.content} 
-                                                isTyping={typingState?.sessionId === activeSessionId && typingState?.index === index} 
+                                            <TypewriterText
+                                                content={msg.content}
+                                                isTyping={typingState?.sessionId === activeSessionId && typingState?.index === index}
                                                 isFinalChunk={typingState?.isFinalChunk ?? true}
                                                 onTick={() => messagesEndRef.current?.scrollIntoView({ behavior: "auto" })}
                                                 onComplete={() => setTypingState(null)}
@@ -546,11 +546,11 @@ function SingleCodeBlock({ code, lang }: { code: string, lang: string }) {
         <div className="rounded-[8px] overflow-hidden my-4 border border-[#3f3f3f] shadow-[0_4px_15px_rgba(0,0,0,0.3)]">
             <div className="flex items-center justify-between px-4 py-2 bg-[#2f2f2f] border-b border-[#3f3f3f]">
                 <span className="text-xs text-neutral-300 font-semibold tracking-wider uppercase">{lang}</span>
-                <button 
+                <button
                     onClick={() => navigator.clipboard.writeText(code)}
                     className="text-[11px] text-neutral-400 hover:text-white transition-colors flex items-center gap-1.5"
                 >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></svg>
                     Copy code
                 </button>
             </div>
@@ -563,7 +563,7 @@ function SingleCodeBlock({ code, lang }: { code: string, lang: string }) {
 
 function FormattedOutput({ text }: { text: string }) {
     const parts = text.split(/(```[\s\S]*?(?:```|$))/g);
-    
+
     return (
         <div className="space-y-4">
             {parts.map((part, index) => {
@@ -572,10 +572,10 @@ function FormattedOutput({ text }: { text: string }) {
                     const lines = cleanPart.split('\n');
                     const lang = lines[0].trim() || "code";
                     const codeBlock = lines.slice(1).join('\n');
-                    
+
                     return <SingleCodeBlock key={index} code={codeBlock} lang={lang} />;
                 }
-                
+
                 if (!part.trim()) return null;
                 const isRtl = isArabicText(part);
                 return <div key={index} dir={isRtl ? "rtl" : "ltr"} className={cn("whitespace-pre-wrap leading-relaxed", isRtl && "text-right")}>{part}</div>;
@@ -586,7 +586,7 @@ function FormattedOutput({ text }: { text: string }) {
 
 function TypewriterText({ content, isTyping, isFinalChunk, onTick, onComplete }: { content: string, isTyping: boolean, isFinalChunk: boolean, onTick?: () => void, onComplete?: () => void }) {
     const [displayed, setDisplayed] = useState(isTyping ? "" : content);
-    
+
     // Use refs to stabilize mutable callback references, preventing useEffect re-triggering
     const onTickRef = useRef(onTick);
     const onCompleteRef = useRef(onComplete);
@@ -604,7 +604,7 @@ function TypewriterText({ content, isTyping, isFinalChunk, onTick, onComplete }:
             displayedLen.current = content.length;
             return;
         }
-        
+
         let i = displayedLen.current;
         if (i > content.length) { i = 0; setDisplayed(""); displayedLen.current = 0; }
 
@@ -612,8 +612,8 @@ function TypewriterText({ content, isTyping, isFinalChunk, onTick, onComplete }:
             if (i < content.length) {
                 const diff = content.length - i;
                 const chunk = diff > 100 ? Math.ceil(diff / 10) : 3; // Type much faster if massive buffer
-                
-                i += chunk; 
+
+                i += chunk;
                 if (i > content.length) i = content.length;
                 setDisplayed(content.substring(0, i));
                 displayedLen.current = i;
