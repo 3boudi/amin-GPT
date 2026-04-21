@@ -11,10 +11,14 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api/nvidia': {
+      '/.netlify/functions/chat': {
         target: 'https://integrate.api.nvidia.com',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api\/nvidia/, '')
+        rewrite: () => '/v1/chat/completions',
+        headers: {
+          'Authorization': `Bearer ${process.env.NVIDIA_API_KEY || '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'}`,
+          'Accept': 'text/event-stream'
+        }
       }
     }
   }

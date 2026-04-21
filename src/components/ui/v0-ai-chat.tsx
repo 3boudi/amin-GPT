@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import axios from "axios";
 import {
     MonitorIcon,
     CircleUserRound,
@@ -17,10 +16,9 @@ import {
 } from "lucide-react";
 
 // ==========================================
-// NVIDIA NIM API CONFIGURATION
+// API CONFIGURATION (Key is stored server-side in Netlify env vars)
 // ==========================================
-const NVIDIA_API_KEY = "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";
-const NVIDIA_API_URL = "/api/nvidia/v1/chat/completions";
+const CHAT_API_URL = "/.netlify/functions/chat";
 const MODEL = "google/gemma-3n-e4b-it";
 
 const SYSTEM_PROMPT = `You are amin-GPT, an advanced AI assistant created by Halitim Amin, an Artificial Intelligence Engineer.
@@ -196,72 +194,76 @@ export function VercelV0Chat() {
         setIsWaiting(true);
 
         try {
-            let apiMessages = [
+            const apiMessages = [
                 { role: "system", content: SYSTEM_PROMPT },
                 ...freshMessages.map(m => ({ role: m.role, content: m.content }))
             ];
 
-            let isComplete = false;
-            let loopCount = 0;
-            const MAX_LOOPS = 25;
+            const response = await fetch(CHAT_API_URL, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    model: MODEL,
+                    messages: apiMessages,
+                    max_tokens: 3500,
+                    temperature: 0.70,
+                    top_p: 0.90,
+                    stream: true
+                })
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.error?.message || `HTTP error! status: ${response.status}`);
+            }
+
+            const reader = response.body?.getReader();
+            const decoder = new TextDecoder("utf-8");
             let aggregatedContent = "";
+            let buffer = "";
 
-            while (!isComplete && loopCount < MAX_LOOPS) {
-                loopCount++;
+            if (reader) {
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
 
-                const response = await axios.post(
-                    NVIDIA_API_URL,
-                    {
-                        model: MODEL,
-                        messages: apiMessages,
-                        max_tokens: 3500,
-                        temperature: 0.70,
-                        top_p: 0.90,
-                        stream: false
-                    },
-                    {
-                        headers: {
-                            "Authorization": `Bearer ${NVIDIA_API_KEY}`,
-                            "Content-Type": "application/json",
-                            "Accept": "application/json"
+                    buffer += decoder.decode(value, { stream: true });
+                    let boundary = buffer.indexOf('\n');
+
+                    while (boundary !== -1) {
+                        const line = buffer.slice(0, boundary).trim();
+                        buffer = buffer.slice(boundary + 1);
+                        boundary = buffer.indexOf('\n');
+
+                        if (line.startsWith('data: ')) {
+                            const dataStr = line.slice(6);
+                            if (dataStr === '[DONE]') break;
+
+                            try {
+                                const data = JSON.parse(dataStr);
+                                const delta = data.choices[0]?.delta?.content || "";
+                                aggregatedContent += delta;
+
+                                const finalMessages = [...freshMessages, { role: "assistant" as const, content: aggregatedContent }];
+                                setTypingState({ sessionId: targetSessionId, index: finalMessages.length - 1, isFinalChunk: false });
+                                setSessions(prev =>
+                                    prev.map(s => s.id === targetSessionId ? { ...s, messages: finalMessages, updatedAt: Date.now() } : s)
+                                );
+                            } catch (e) {
+                                // Ignore partial JSON fragments during stream
+                            }
                         }
                     }
-                );
-
-                if (response.data?.choices && response.data.choices.length > 0) {
-                    const choice = response.data.choices[0];
-                    aggregatedContent += choice.message.content;
-
-                    const isFinal = choice.finish_reason !== "length";
-                    const finalMessages = [...freshMessages, { role: "assistant" as const, content: aggregatedContent }];
-
-                    setTypingState({ sessionId: targetSessionId, index: finalMessages.length - 1, isFinalChunk: isFinal });
-                    setSessions(prev =>
-                        prev.map(s => s.id === targetSessionId ? { ...s, messages: finalMessages, updatedAt: Date.now() } : s)
-                    );
-
-                    if (!isFinal) {
-                        apiMessages = [
-                            ...apiMessages,
-                            { role: "assistant", content: choice.message.content },
-                            { role: "user", content: "Continue strictly from where you left off without any introductory text." }
-                        ];
-                    } else {
-                        isComplete = true;
-                    }
-                } else if (response.data?.error) {
-                    const finalMessages = [...freshMessages, { role: "assistant" as const, content: `Error: ${JSON.stringify(response.data.error)}` }];
-                    setSessions(prev => prev.map(s => s.id === targetSessionId ? { ...s, messages: finalMessages, updatedAt: Date.now() } : s));
-                    isComplete = true;
-                } else {
-                    isComplete = true;
                 }
             }
+            
+            setTypingState(prev => prev ? { ...prev, isFinalChunk: true } : null);
+
         } catch (error: unknown) {
             let serverError = "Unknown error occurred";
-            if (axios.isAxiosError(error)) {
-                serverError = error.response?.data?.error ? JSON.stringify(error.response.data.error) : error.message;
-            } else if (error instanceof Error) {
+            if (error instanceof Error) {
                 serverError = error.message;
             }
             const finalMessages = [...freshMessages, { role: "assistant" as const, content: `Error: ${serverError}` }];
@@ -587,46 +589,49 @@ function FormattedOutput({ text }: { text: string }) {
 function TypewriterText({ content, isTyping, isFinalChunk, onTick, onComplete }: { content: string, isTyping: boolean, isFinalChunk: boolean, onTick?: () => void, onComplete?: () => void }) {
     const [displayed, setDisplayed] = useState(isTyping ? "" : content);
 
-    // Use refs to stabilize mutable callback references, preventing useEffect re-triggering
+    // Keep strict tracker of latest states for interval loop to use without rebuilding effect
+    const contentRef = useRef(content);
+    const isFinalRef = useRef(isFinalChunk);
     const onTickRef = useRef(onTick);
     const onCompleteRef = useRef(onComplete);
-    const displayedLen = useRef(displayed.length);
 
+    // Sync refs every render tick safely
     useEffect(() => {
+        contentRef.current = content;
+        isFinalRef.current = isFinalChunk;
         onTickRef.current = onTick;
         onCompleteRef.current = onComplete;
-    }, [onTick, onComplete]);
+    });
 
     useEffect(() => {
         if (!isTyping) {
-            // eslint-disable-next-line react-hooks/set-state-in-effect
-            setDisplayed(content);
-            displayedLen.current = content.length;
+            setDisplayed(contentRef.current);
             return;
         }
 
-        let i = displayedLen.current;
-        if (i > content.length) { i = 0; setDisplayed(""); displayedLen.current = 0; }
+        let i = displayed.length;
+        if (i > contentRef.current.length) { i = 0; setDisplayed(""); }
 
         const interval = setInterval(() => {
-            if (i < content.length) {
-                const diff = content.length - i;
-                const chunk = diff > 100 ? Math.ceil(diff / 10) : 3; // Type much faster if massive buffer
+            const currentContent = contentRef.current;
+            
+            if (i < currentContent.length) {
+                const diff = currentContent.length - i;
+                const chunk = diff > 100 ? Math.ceil(diff / 10) : 3;
 
                 i += chunk;
-                if (i > content.length) i = content.length;
-                setDisplayed(content.substring(0, i));
-                displayedLen.current = i;
+                if (i > currentContent.length) i = currentContent.length;
+                setDisplayed(currentContent.substring(0, i));
 
                 if (onTickRef.current) onTickRef.current();
-            } else if (isFinalChunk) {
+            } else if (isFinalRef.current) {
                 clearInterval(interval);
                 if (onCompleteRef.current) onCompleteRef.current();
             }
         }, 15);
 
         return () => clearInterval(interval);
-    }, [content, isTyping, isFinalChunk]);
+    }, [isTyping]);
 
     return <FormattedOutput text={displayed} />;
 }

@@ -1,8 +1,10 @@
-[[redirects]]
-  from = "/api/nvidia/*"
-  to = "https://integrate.api.nvidia.com/:splat"
-  status = 200
-  force = true
+[build]
+  command = "npm run build"
+  publish = "dist"
+  functions = "netlify/functions"
+
+[functions]
+  node_bundler = "esbuild"
 
 [[redirects]]
   from = "/*"
