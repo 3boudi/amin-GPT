@@ -11,7 +11,7 @@ export default async (request) => {
         });
     }
 
-    const NVIDIA_API_KEY = Netlify.env.get("NVIDIA_API_KEY");
+    const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY;
     if (!NVIDIA_API_KEY) {
         return new Response(JSON.stringify({ error: "API key not configured on server" }), {
             status: 500,
@@ -57,8 +57,4 @@ export default async (request) => {
             headers: { "Content-Type": "application/json" }
         });
     }
-};
-
-export const config = {
-    path: "/.netlify/functions/chat"
 };
