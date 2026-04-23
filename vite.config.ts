@@ -16,7 +16,7 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: () => '/v1/chat/completions',
         headers: {
-          'Authorization': `Bearer ${process.env.NVIDIA_API_KEY || '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'}`,
+          'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}`,
           'Accept': 'text/event-stream'
         }
       }
