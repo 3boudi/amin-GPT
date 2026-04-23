@@ -72,5 +72,6 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-family: "Cairo", "Noto Sans Arabic", "Segoe UI", Tahoma, sans-serif;
   }
 }
