@@ -20,6 +20,7 @@ import {
 // ==========================================
 const CHAT_API_URL = "/.netlify/functions/chat";
 const MODEL = "google/gemma-3n-e4b-it";
+// Vite automatically injects VITE_ prefixed environment variables from Netlify during build
 const TURNSTILE_SITE_KEY = import.meta.env.VITE_TURNSTILE_SITE_KEY || "";
 
 interface TurnstileApi {
