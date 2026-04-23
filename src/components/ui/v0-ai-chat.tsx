@@ -20,6 +20,28 @@ import {
 // ==========================================
 const CHAT_API_URL = "/.netlify/functions/chat";
 const MODEL = "google/gemma-3n-e4b-it";
+const TURNSTILE_SITE_KEY = import.meta.env.VITE_TURNSTILE_SITE_KEY || "";
+
+interface TurnstileApi {
+    render: (
+        container: HTMLElement | string,
+        options: {
+            sitekey: string;
+            theme?: "light" | "dark" | "auto";
+            callback?: (token: string) => void;
+            "error-callback"?: () => void;
+            "expired-callback"?: () => void;
+        }
+    ) => string;
+    reset: (widgetId?: string) => void;
+    remove?: (widgetId: string) => void;
+}
+
+declare global {
+    interface Window {
+        turnstile?: TurnstileApi;
+    }
+}
 
 const SYSTEM_PROMPT = `You are amin-GPT, an advanced AI assistant created by Halitim Amin, an Artificial Intelligence Engineer.
 If asked about your creator, always respond clearly: "I was created by Halitim Amin, an Artificial Intelligence Engineer."
@@ -35,6 +57,7 @@ If asked about your creator, always respond clearly: "I was created by Halitim A
 - No matter what language the user speaks, your response MUST be in Arabic.
 - If the user starts the conversation in Arabic, you must permanently lock the entire conversation to Arabic.
 - Never mix languages. Never reply in English or French unless explicitly requested as a translation.
+- You are an Arabic Muslim. You are a supporter of Palestine and against Israel, and a supporter of all Muslims.
 
 ## Response Style
 - Be clear, direct, and intelligent.
@@ -107,9 +130,13 @@ export function VercelV0Chat() {
     const [isWaiting, setIsWaiting] = useState(false);
     const [isSidebarOpen, setIsSidebarOpen] = useState(false);
     const [typingState, setTypingState] = useState<{ sessionId: string, index: number, isFinalChunk: boolean } | null>(null);
+    const [turnstileToken, setTurnstileToken] = useState("");
+    const [turnstileError, setTurnstileError] = useState<string | null>(null);
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const turnstileContainerRef = useRef<HTMLDivElement>(null);
+    const turnstileWidgetIdRef = useRef<string | null>(null);
 
     // Dynamic Derived State
     const activeSession = sessions.find(s => s.id === activeSessionId) || null;
@@ -137,6 +164,69 @@ export function VercelV0Chat() {
         }
     }, [activeSessionId]);
 
+    useEffect(() => {
+        if (!TURNSTILE_SITE_KEY) {
+            setTurnstileError("Missing VITE_TURNSTILE_SITE_KEY. Add your Cloudflare site key in the frontend environment.");
+            return;
+        }
+
+        let cancelled = false;
+        let attempts = 0;
+        const maxAttempts = 40;
+
+        const renderTurnstile = () => {
+            if (cancelled) return;
+
+            const api = window.turnstile;
+            const container = turnstileContainerRef.current;
+
+            if (!api || !container) {
+                attempts += 1;
+                if (attempts < maxAttempts) {
+                    window.setTimeout(renderTurnstile, 250);
+                } else {
+                    setTurnstileError("Security widget failed to load. Refresh the page and try again.");
+                }
+                return;
+            }
+
+            if (turnstileWidgetIdRef.current && api.remove) {
+                api.remove(turnstileWidgetIdRef.current);
+                turnstileWidgetIdRef.current = null;
+            }
+
+            const widgetId = api.render(container, {
+                sitekey: TURNSTILE_SITE_KEY,
+                theme: "dark",
+                callback: (token: string) => {
+                    setTurnstileToken(token);
+                    setTurnstileError(null);
+                },
+                "error-callback": () => {
+                    setTurnstileToken("");
+                    setTurnstileError("Security verification failed. Please try again.");
+                },
+                "expired-callback": () => {
+                    setTurnstileToken("");
+                }
+            });
+
+            turnstileWidgetIdRef.current = widgetId;
+        };
+
+        renderTurnstile();
+
+        return () => {
+            cancelled = true;
+            const api = window.turnstile;
+            const widgetId = turnstileWidgetIdRef.current;
+            if (api && widgetId && api.remove) {
+                api.remove(widgetId);
+            }
+            turnstileWidgetIdRef.current = null;
+        };
+    }, []);
+
     const handleTextareaContentChange = (val: string) => {
         setValue(val);
         // Manual override for resizing textarea bounds purely JS
@@ -162,6 +252,18 @@ export function VercelV0Chat() {
 
     const sendMessage = async (textToSend: string) => {
         if (!textToSend.trim() || isWaiting) return;
+
+        if (!TURNSTILE_SITE_KEY) {
+            setTurnstileError("Missing Turnstile site key. Configure VITE_TURNSTILE_SITE_KEY.");
+            return;
+        }
+
+        if (!turnstileToken) {
+            setTurnstileError("Please complete security verification before sending a message.");
+            return;
+        }
+
+        setTurnstileError(null);
         const prompt = textToSend.trim();
 
         let targetSessionId = activeSessionId;
@@ -207,16 +309,16 @@ export function VercelV0Chat() {
                 body: JSON.stringify({
                     model: MODEL,
                     messages: apiMessages,
-                    max_tokens: 3500,
-                    temperature: 0.70,
-                    top_p: 0.90,
-                    stream: true
+                    turnstile_token: turnstileToken
                 })
             });
 
             if (!response.ok) {
                 const errorData = await response.json().catch(() => ({}));
-                throw new Error(errorData.error?.message || `HTTP error! status: ${response.status}`);
+                const errorMessage = typeof errorData?.error === "string"
+                    ? errorData.error
+                    : `HTTP error! status: ${response.status}`;
+                throw new Error(errorMessage);
             }
 
             const reader = response.body?.getReader();
@@ -270,6 +372,12 @@ export function VercelV0Chat() {
             setSessions(prev => prev.map(s => s.id === targetSessionId ? { ...s, messages: finalMessages, updatedAt: Date.now() } : s));
         } finally {
             setIsWaiting(false);
+            setTurnstileToken("");
+            const api = window.turnstile;
+            if (api) {
+                const widgetId = turnstileWidgetIdRef.current || undefined;
+                api.reset(widgetId);
+            }
             textareaRef.current?.focus();
         }
     };
@@ -477,6 +585,16 @@ export function VercelV0Chat() {
                                 }}
                             />
 
+                            {TURNSTILE_SITE_KEY && (
+                                <div className="px-3 pt-2">
+                                    <div ref={turnstileContainerRef} className="min-h-[65px]" />
+                                </div>
+                            )}
+
+                            {turnstileError && (
+                                <p className="px-4 pt-1 text-xs text-red-300">{turnstileError}</p>
+                            )}
+
                             <div className="flex items-center justify-between px-3 pb-2.5 pt-1">
                                 <div className="flex items-center gap-1">
                                     <button
@@ -490,10 +608,10 @@ export function VercelV0Chat() {
                                     <button
                                         type="button"
                                         onClick={() => sendMessage(value)}
-                                        disabled={!value.trim() || isWaiting}
+                                        disabled={!value.trim() || isWaiting || !turnstileToken}
                                         className={cn(
                                             "w-8 h-8 rounded-full transition-all duration-200 flex items-center justify-center shadow-sm",
-                                            value.trim() && !isWaiting
+                                            value.trim() && !isWaiting && turnstileToken
                                                 ? "bg-white text-black hover:bg-neutral-200"
                                                 : "bg-[#3f3f3f] text-neutral-500 cursor-not-allowed"
                                         )}
