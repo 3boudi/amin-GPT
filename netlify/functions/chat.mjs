@@ -1,8 +1,10 @@
 // Netlify Serverless Function — Secure NVIDIA API Proxy
 
-const DEFAULT_MODEL = "meta/llama-3.1-405b-instruct";
+const DEFAULT_MODEL = "deepseek-ai/deepseek-v4-pro";
 const ALLOWED_MODELS = new Set([
-    "meta/llama-3.1-405b-instruct",
+    "deepseek-ai/deepseek-v4-pro",
+    "meta/llama-3.3-70b-instruct",
+    "meta/llama-3.1-70b-instruct",
     "meta/llama-3.2-3b-instruct"
 ]);
 
@@ -151,8 +153,11 @@ export default async (request) => {
         const safePayload = {
             model: safeModel,
             messages: cleanedMessages,
-            max_tokens: 1024,
-            stream: true
+            temperature: 1,
+            top_p: 0.95,
+            max_tokens: 16384,
+            stream: true,
+            chat_template_kwargs: { thinking: false }
         };
 
         const nvidiaResponse = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
