@@ -168,7 +168,15 @@ export default async (request) => {
         if (!nvidiaResponse.ok) {
             const errorText = await nvidiaResponse.text();
             console.error("NVIDIA API Error:", errorText);
-            return jsonResponse(nvidiaResponse.status, { error: "An error occurred with the upstream AI provider." });
+            
+            // Try to parse the error message if it's JSON
+            let parsedError = errorText;
+            try {
+                const jsonObj = JSON.parse(errorText);
+                parsedError = jsonObj.detail || jsonObj.error || errorText;
+            } catch(e) {}
+            
+            return jsonResponse(nvidiaResponse.status, { error: `Upstream AI provider error: ${parsedError}` });
         }
 
         // Stream the SSE response back to the client.
