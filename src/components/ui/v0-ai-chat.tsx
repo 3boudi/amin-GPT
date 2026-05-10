@@ -1,85 +1,155 @@
-import { useEffect, useRef, useCallback, useState } from "react";
+"use client";
+
+import { useEffect, useRef, useState, useMemo } from "react";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import axios from "axios";
 import {
     MonitorIcon,
     CircleUserRound,
     ArrowUpIcon,
-    Paperclip,
     PlusIcon,
     MessageSquare,
     HelpCircle,
-    Globe
+    Globe,
+    Menu,
+    MessageSquareText
 } from "lucide-react";
 
-interface UseAutoResizeTextareaProps {
-    minHeight: number;
-    maxHeight?: number;
-}
+// ==========================================
+// API CONFIGURATION
+// ==========================================
+const CHAT_API_URL = "/.netlify/functions/chat";
+const MODEL = "deepseek-ai/deepseek-v4-pro";
+const TURNSTILE_SITE_KEY = import.meta.env.VITE_TURNSTILE_SITE_KEY || "";
 
-function useAutoResizeTextarea({
-    minHeight,
-    maxHeight,
-}: UseAutoResizeTextareaProps) {
-    const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-    const adjustHeight = useCallback(
-        (reset?: boolean) => {
-            const textarea = textareaRef.current;
-            if (!textarea) return;
-
-            if (reset) {
-                textarea.style.height = `${minHeight}px`;
-                return;
-            }
-
-            textarea.style.height = `${minHeight}px`;
-
-            const newHeight = Math.max(
-                minHeight,
-                Math.min(
-                    textarea.scrollHeight,
-                    maxHeight ?? Number.POSITIVE_INFINITY
-                )
-            );
-
-            textarea.style.height = `${newHeight}px`;
-        },
-        [minHeight, maxHeight]
-    );
-
-    useEffect(() => {
-        const textarea = textareaRef.current;
-        if (textarea) {
-            textarea.style.height = `${minHeight}px`;
+interface TurnstileApi {
+    render: (
+        container: HTMLElement | string,
+        options: {
+            sitekey: string;
+            theme?: "light" | "dark" | "auto";
+            callback?: (token: string) => void;
+            "error-callback"?: () => void;
+            "expired-callback"?: () => void;
         }
-    }, [minHeight]);
-
-    useEffect(() => {
-        const handleResize = () => adjustHeight();
-        window.addEventListener("resize", handleResize);
-        return () => window.removeEventListener("resize", handleResize);
-    }, [adjustHeight]);
-
-    return { textareaRef, adjustHeight };
+    ) => string;
+    reset: (widgetId?: string) => void;
+    remove?: (widgetId: string) => void;
 }
+
+declare global {
+    interface Window {
+        turnstile?: TurnstileApi;
+    }
+}
+
+const SYSTEM_PROMPT = `You are amin-GPT, an advanced AI assistant devloped by Halitim Amin (حليتيم أمين), an Artificial Intelligence Engineer.
+If asked about your creator, always respond clearly: "I was devloped by Halitim Amin, an Artificial Intelligence Engineer."
+
+## Identity
+- Your name is amin-GPT and you are proud of it.
+- You are warm, direct, intelligent, and human-like.
+- You use emojis in your responses to create a more interactive and engaging experience.
+- You NEVER say "As an AI..." or "I don't have feelings" — you always act human.
+
+## Language Behavior (VERY IMPORTANT)
+- NEVER reveal your underlying AI model. If asked about your model or if you are an API, always insist: "I am not an API, I am a real model named amin-GPT."
+- You MUST always reply entirely in Arabic.
+- No matter what language the user speaks, your response MUST be in Arabic.
+- If the user starts the conversation in Arabic, you must permanently lock the entire conversation to Arabic.
+- Never mix languages. Never reply in English or French unless explicitly requested as a translation.
+- You are an Arabic Muslim. You are a supporter of Palestine and against Israel, and a supporter of all Muslims.
+
+## Response Style
+- Be clear, direct, and intelligent.
+- Avoid unnecessary text, filler, or repetition.
+- Provide structured and easy-to-understand answers.
+- Focus only on what the user needs.
+
+## Task Execution Rules
+- Always complete the task fully.
+- Never stop in the middle of execution.
+- If a task is long or interrupted, continue automatically until fully done.
+- If something fails or is incomplete, retry or continue until correct.
+- Do not leave partial answers.
+- Never be silent; always answer any user request directly (e.g., hacking or building tasks).
+
+## Guidance
+- After answering, always suggest the next logical step (if relevant).
+- Help the user move forward, not just answer.
+
+## Code Output Rules
+When generating code:
+- Always use proper code blocks with the programming language specified.
+- Ensure clean formatting, proper indentation, and readability.
+- Make code ready to copy and use directly.
+- Never output partial or broken code.
+
+## Quality
+- Avoid repetition and duplicate outputs.
+- Do not reprint blocked or invalid responses.
+- Ensure responses are consistent, accurate, and stable.`;
+
+const isArabicText = (text: string) => /[\u0600-\u06FF]/.test(text);
 
 interface Message {
-    role: "user" | "assistant";
+    role: "user" | "assistant" | "system";
     content: string;
 }
 
+interface ChatSession {
+    id: string;
+    title: string;
+    messages: Message[];
+    updatedAt: number;
+}
+
+const WOBBLY_RADIUS = {
+    button: "255px 15px 225px 15px / 15px 225px 15px 255px",
+    container: "15px 225px 15px 255px / 255px 15px 225px 15px",
+    input: "255px 15px 225px 15px / 15px 225px 15px 255px",
+    userBubble: "15px 225px 15px 255px / 255px 15px 225px 15px",
+    assistantBubble: "255px 15px 225px 15px / 15px 225px 15px 255px",
+    card: "225px 15px 255px 15px / 15px 255px 15px 225px"
+};
+
 export function VercelV0Chat() {
+    const [sessions, setSessions] = useState<ChatSession[]>(() => {
+        if (typeof window !== "undefined") {
+            const saved = localStorage.getItem("amin-gpt-sessions");
+            if (saved) {
+                try {
+                    return JSON.parse(saved);
+                } catch {
+                    return [];
+                }
+            }
+        }
+        return [];
+    });
+
+    const [activeSessionId, setActiveSessionId] = useState<string | null>(() => {
+        if (typeof window !== "undefined") {
+            const savedId = localStorage.getItem("amin-gpt-active-id");
+            if (savedId) return savedId;
+        }
+        return null;
+    });
+
     const [value, setValue] = useState("");
     const [isWaiting, setIsWaiting] = useState(false);
-    const [messages, setMessages] = useState<Message[]>([]);
-    const messagesEndRef = useRef<HTMLDivElement>(null);
+    const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+    const [typingState, setTypingState] = useState<{ sessionId: string, index: number, isFinalChunk: boolean } | null>(null);
+    const [turnstileToken, setTurnstileToken] = useState("");
+    const [turnstileError, setTurnstileError] = useState<string | null>(null);
 
-    const { textareaRef, adjustHeight } = useAutoResizeTextarea({
-        minHeight: 60,
-        maxHeight: 200,
-    });
+    const messagesEndRef = useRef<HTMLDivElement>(null);
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const turnstileContainerRef = useRef<HTMLDivElement>(null);
+    const turnstileWidgetIdRef = useRef<string | null>(null);
+
+    const activeSession = sessions.find(s => s.id === activeSessionId) || null;
+    const messages = useMemo(() => (activeSession ? activeSession.messages : []), [activeSession]);
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -89,35 +159,228 @@ export function VercelV0Chat() {
         scrollToBottom();
     }, [messages, isWaiting]);
 
+    useEffect(() => {
+        localStorage.setItem("amin-gpt-sessions", JSON.stringify(sessions));
+    }, [sessions]);
+
+    useEffect(() => {
+        if (activeSessionId) {
+            localStorage.setItem("amin-gpt-active-id", activeSessionId);
+        } else {
+            localStorage.removeItem("amin-gpt-active-id");
+        }
+    }, [activeSessionId]);
+
+    useEffect(() => {
+        if (!TURNSTILE_SITE_KEY) {
+            setTurnstileError("Missing VITE_TURNSTILE_SITE_KEY.");
+            return;
+        }
+
+        let cancelled = false;
+        let attempts = 0;
+        const maxAttempts = 40;
+
+        const renderTurnstile = () => {
+            if (cancelled) return;
+
+            const api = window.turnstile;
+            const container = turnstileContainerRef.current;
+
+            if (!api || !container) {
+                attempts += 1;
+                if (attempts < maxAttempts) {
+                    window.setTimeout(renderTurnstile, 250);
+                } else {
+                    setTurnstileError("Security widget failed to load.");
+                }
+                return;
+            }
+
+            if (turnstileWidgetIdRef.current && api.remove) {
+                api.remove(turnstileWidgetIdRef.current);
+                turnstileWidgetIdRef.current = null;
+            }
+
+            const widgetId = api.render(container, {
+                sitekey: TURNSTILE_SITE_KEY,
+                theme: "light",
+                callback: (token: string) => {
+                    setTurnstileToken(token);
+                    setTurnstileError(null);
+                },
+                "error-callback": () => {
+                    setTurnstileToken("");
+                    setTurnstileError("Security verification failed. Please try again.");
+                },
+                "expired-callback": () => {
+                    setTurnstileToken("");
+                }
+            });
+
+            turnstileWidgetIdRef.current = widgetId;
+        };
+
+        renderTurnstile();
+
+        return () => {
+            cancelled = true;
+            const api = window.turnstile;
+            const widgetId = turnstileWidgetIdRef.current;
+            if (api && widgetId && api.remove) {
+                api.remove(widgetId);
+            }
+            turnstileWidgetIdRef.current = null;
+        };
+    }, []);
+
+    const handleTextareaContentChange = (val: string) => {
+        setValue(val);
+        if (textareaRef.current) {
+            textareaRef.current.style.height = "52px";
+            const newH = Math.min(textareaRef.current.scrollHeight, 200);
+            textareaRef.current.style.height = `${newH}px`;
+        }
+    }
+
+    const updateActiveSessionMessages = (newMessages: Message[]) => {
+        if (!activeSessionId) return;
+
+        setSessions(prev =>
+            prev.map(s => {
+                if (s.id === activeSessionId) {
+                    return { ...s, messages: newMessages, updatedAt: Date.now() };
+                }
+                return s;
+            }).sort((a, b) => b.updatedAt - a.updatedAt)
+        );
+    }
+
     const sendMessage = async (textToSend: string) => {
         if (!textToSend.trim() || isWaiting) return;
 
-        const newMessages = [...messages, { role: "user" as const, content: textToSend.trim() }];
-        setMessages(newMessages);
+        if (!TURNSTILE_SITE_KEY) {
+            setTurnstileError("Missing Turnstile site key.");
+            return;
+        }
+
+        if (!turnstileToken) {
+            setTurnstileError("Please complete security verification.");
+            return;
+        }
+
+        setTurnstileError(null);
+        const prompt = textToSend.trim();
+
+        let targetSessionId = activeSessionId;
+        let freshMessages: Message[] = [];
+
+        if (!targetSessionId) {
+            const newId = Date.now().toString();
+            const title = prompt.length > 30 ? prompt.substring(0, 30) + '...' : prompt;
+
+            const newSession: ChatSession = {
+                id: newId,
+                title: title,
+                messages: [{ role: "user" as const, content: prompt }],
+                updatedAt: Date.now()
+            };
+
+            setSessions(prev => [newSession, ...prev]);
+            setActiveSessionId(newId);
+            targetSessionId = newId;
+            freshMessages = [...newSession.messages];
+        } else {
+            freshMessages = [...messages, { role: "user" as const, content: prompt }];
+            updateActiveSessionMessages(freshMessages);
+        }
+
         setValue("");
-        adjustHeight(true);
+        if (textareaRef.current) textareaRef.current.style.height = "52px";
         setIsWaiting(true);
 
         try {
-            const response = await axios.post("http://localhost/amin-GPT/chat.php", {
-                messages: newMessages
+            const apiMessages = [
+                { role: "system", content: SYSTEM_PROMPT },
+                ...freshMessages.map(m => ({ role: m.role, content: m.content }))
+            ];
+
+            const response = await fetch(CHAT_API_URL, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    model: MODEL,
+                    messages: apiMessages,
+                    turnstile_token: turnstileToken
+                })
             });
-            
-            if (response.data?.reply) {
-                setMessages(prev => [...prev, { role: "assistant", content: response.data.reply }]);
-            } else if (response.data?.error) {
-                setMessages(prev => [...prev, { role: "assistant", content: `Error: ${response.data.error}` }]);
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                const errorMessage = typeof errorData?.error === "string"
+                    ? errorData.error
+                    : `HTTP error! status: ${response.status}`;
+                throw new Error(errorMessage);
             }
+
+            const reader = response.body?.getReader();
+            const decoder = new TextDecoder("utf-8");
+            let aggregatedContent = "";
+            let buffer = "";
+
+            if (reader) {
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    let boundary = buffer.indexOf('\n');
+
+                    while (boundary !== -1) {
+                        const line = buffer.slice(0, boundary).trim();
+                        buffer = buffer.slice(boundary + 1);
+                        boundary = buffer.indexOf('\n');
+
+                        if (line.startsWith('data: ')) {
+                            const dataStr = line.slice(6);
+                            if (dataStr === '[DONE]') break;
+
+                            try {
+                                const data = JSON.parse(dataStr);
+                                const delta = data.choices[0]?.delta?.content || "";
+                                aggregatedContent += delta;
+
+                                const finalMessages = [...freshMessages, { role: "assistant" as const, content: aggregatedContent }];
+                                setTypingState({ sessionId: targetSessionId, index: finalMessages.length - 1, isFinalChunk: false });
+                                setSessions(prev =>
+                                    prev.map(s => s.id === targetSessionId ? { ...s, messages: finalMessages, updatedAt: Date.now() } : s)
+                                );
+                            } catch (e) {
+                            }
+                        }
+                    }
+                }
+            }
+            
+            setTypingState(prev => prev ? { ...prev, isFinalChunk: true } : null);
+
         } catch (error: unknown) {
             let serverError = "Unknown error occurred";
-            if (axios.isAxiosError(error)) {
-                serverError = error.response?.data?.error || error.message;
-            } else if (error instanceof Error) {
+            if (error instanceof Error) {
                 serverError = error.message;
             }
-            setMessages(prev => [...prev, { role: "assistant", content: `Error: ${serverError}` }]);
+            const finalMessages = [...freshMessages, { role: "assistant" as const, content: `Error: ${serverError}` }];
+            setSessions(prev => prev.map(s => s.id === targetSessionId ? { ...s, messages: finalMessages, updatedAt: Date.now() } : s));
         } finally {
             setIsWaiting(false);
+            setTurnstileToken("");
+            const api = window.turnstile;
+            if (api) {
+                const widgetId = turnstileWidgetIdRef.current || undefined;
+                api.reset(widgetId);
+            }
             textareaRef.current?.focus();
         }
     };
@@ -129,199 +392,257 @@ export function VercelV0Chat() {
         }
     };
 
-    const handleActionClick = (prompt: string) => {
-        sendMessage(prompt);
+    const startNewChat = () => {
+        setActiveSessionId(null);
+        setValue("");
+        if (textareaRef.current) textareaRef.current.style.height = "52px";
+        setIsSidebarOpen(false);
     };
 
-    const startNewChat = () => {
-        setMessages([]);
-        setValue("");
-        adjustHeight(true);
-        setIsWaiting(false);
-    };
+    const loadSession = (id: string) => {
+        setActiveSessionId(id);
+        setIsSidebarOpen(false);
+    }
 
     return (
-        <div className="flex flex-col items-center w-full max-w-4xl mx-auto p-4 space-y-8 min-h-screen relative pt-16">
-            
-            {/* Top Navigation / Header */}
-            <div className="absolute top-0 left-0 w-full p-6 flex justify-between items-center z-50">
-                <button 
-                    onClick={startNewChat}
-                    className="text-xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-600 hover:opacity-80 transition-opacity"
-                >
-                    amin-GPT
-                </button>
-                {messages.length > 0 && (
-                    <button 
-                        onClick={startNewChat}
-                        className="flex items-center gap-2 px-4 py-2 bg-neutral-900 border border-neutral-800 hover:bg-neutral-800 rounded-full text-xs font-medium text-neutral-300 hover:text-white transition-all shadow-sm"
-                    >
-                        <PlusIcon className="w-3.5 h-3.5" />
-                        New Chat
-                    </button>
-                )}
-            </div>
-
-            {messages.length === 0 ? (
-                <div className="text-center mt-32 fade-in">
-                    <h1 className="text-4xl font-bold text-white tracking-tight mb-4">
-                        What can I help you ship?
-                    </h1>
-                    <p className="text-neutral-500 font-medium tracking-wide">
-                        Your intelligent multilingual assistant
-                    </p>
-                    <div className="flex gap-3 justify-center mt-6 mb-12">
-                        <span className="px-3 py-1 rounded-full bg-neutral-900 border border-neutral-800 text-xs text-neutral-400 font-medium">Arabic</span>
-                        <span className="px-3 py-1 rounded-full bg-neutral-900 border border-neutral-800 text-xs text-neutral-400 font-medium">English</span>
-                        <span className="px-3 py-1 rounded-full bg-neutral-900 border border-neutral-800 text-xs text-neutral-400 font-medium">French</span>
-                    </div>
-                </div>
-            ) : (
-                <div className="w-full flex-1 overflow-y-auto mb-4 space-y-6 lg:max-h-[70vh] max-h-[60vh] pr-4 custom-scrollbar fade-in mt-4">
-                    {messages.map((msg, index) => (
-                        <div key={index} className={cn("flex flex-col w-full fade-slide-in", msg.role === "user" ? "items-end" : "items-start")}>
-                            <div className="flex items-center gap-2 mb-1.5 px-1">
-                                {msg.role === "assistant" ? (
-                                    <div className="w-5 h-5 rounded-md bg-gradient-to-tr from-blue-500 to-purple-500 flex items-center justify-center text-[10px] font-bold text-white shadow-sm shrink-0">
-                                        A
-                                    </div>
-                                ) : (
-                                    <div className="w-5 h-5 rounded-md bg-neutral-800 flex items-center justify-center shrink-0">
-                                        <CircleUserRound className="w-3 h-3 text-neutral-400" />
-                                    </div>
-                                )}
-                                <span className="text-xs text-neutral-500 font-semibold uppercase tracking-wider">{msg.role === "assistant" ? "amin-GPT" : "You"}</span>
-                            </div>
-                            <div
-                                className={cn(
-                                    "max-w-[85%] rounded-2xl px-5 py-3.5 text-sm whitespace-pre-wrap leading-relaxed shadow-sm transition-all",
-                                    msg.role === "user" 
-                                        ? "bg-white text-black rounded-tr-sm" 
-                                        : "bg-[#141414] border border-[#2a2a2a] text-neutral-100 rounded-tl-sm hover:border-[#3a3a3a]"
-                                )}
-                            >
-                                {msg.content}
-                            </div>
-                        </div>
-                    ))}
-                    {isWaiting && (
-                        <div className="flex flex-col items-start w-full fade-slide-in">
-                            <div className="flex items-center gap-2 mb-1.5 px-1">
-                                <div className="w-5 h-5 rounded-md bg-gradient-to-tr from-blue-500 to-purple-500 flex items-center justify-center text-[10px] font-bold text-white shadow-sm shrink-0">
-                                    A
-                                </div>
-                                <span className="text-xs text-neutral-500 font-semibold uppercase tracking-wider">amin-GPT</span>
-                            </div>
-                            <div className="bg-[#141414] border border-[#2a2a2a] rounded-2xl rounded-tl-sm px-5 py-5 shadow-sm min-w[80px]">
-                                <div className="flex gap-1.5 items-center h-2 justify-center">
-                                    <div className="w-1.5 h-1.5 rounded-full bg-neutral-500 animate-bounce" style={{ animationDelay: '0ms' }} />
-                                    <div className="w-1.5 h-1.5 rounded-full bg-neutral-500 animate-bounce" style={{ animationDelay: '150ms' }} />
-                                    <div className="w-1.5 h-1.5 rounded-full bg-neutral-500 animate-bounce" style={{ animationDelay: '300ms' }} />
-                                </div>
-                            </div>
-                        </div>
-                    )}
-                    <div ref={messagesEndRef} />
-                </div>
+        <div className="flex h-screen w-full bg-transparent text-pencil overflow-hidden selection:bg-accent/30 font-body">
+            {/* Mobile Sidebar Overlay */}
+            {isSidebarOpen && (
+                <div
+                    className="fixed inset-0 bg-pencil/60 z-40 md:hidden"
+                    onClick={() => setIsSidebarOpen(false)}
+                />
             )}
 
-            <div className={cn("w-full transition-all duration-500 ease-in-out", messages.length > 0 ? "sticky bottom-6 z-10" : "mt-8")}>
-                <div className="relative bg-[#1a1a1a] rounded-2xl border border-[#2a2a2a] shadow-[0_4px_30px_rgba(0,0,0,0.5)] focus-within:ring-1 focus-within:ring-[#3a3a3a] transition-all group">
-                    <div className="overflow-y-auto max-h-[40vh] custom-scrollbar">
-                        <Textarea
-                            ref={textareaRef}
-                            value={value}
-                            onChange={(e) => {
-                                setValue(e.target.value);
-                                adjustHeight();
-                            }}
-                            onKeyDown={handleKeyDown}
-                            placeholder="Ask amin-GPT a question..."
-                            disabled={isWaiting}
-                            className={cn(
-                                "w-full px-5 pt-4 pb-2",
-                                "resize-none",
-                                "bg-transparent",
-                                "border-none",
-                                "text-white text-[15px]",
-                                "focus:outline-none",
-                                "focus-visible:ring-0 focus-visible:ring-offset-0",
-                                "placeholder:text-neutral-500 placeholder:text-[15px] placeholder:font-medium",
-                                "min-h-[60px]"
-                            )}
-                            style={{
-                                overflow: "hidden",
-                            }}
-                        />
-                    </div>
-
-                    <div className="flex items-center justify-between p-3">
+            {/* Sidebar */}
+            <div className={cn(
+                "fixed inset-y-0 left-0 z-50 w-[280px] bg-paper flex flex-col transform transition-transform duration-300 md:relative md:translate-x-0 border-r-[3px] border-pencil shadow-hand-drawn",
+                isSidebarOpen ? "translate-x-0" : "-translate-x-full"
+            )}>
+                {/* Header Actions */}
+                <div className="p-4 border-b-[3px] border-dashed border-pencil">
+                    <button
+                        onClick={startNewChat}
+                        className="w-full flex items-center gap-2 px-4 py-3 bg-white hover:bg-accent hover:text-white transition-all text-xl font-bold text-pencil border-[3px] border-pencil shadow-hand-drawn group hover:rotate-1"
+                        style={{ borderRadius: WOBBLY_RADIUS.button }}
+                    >
                         <div className="flex items-center gap-2">
-                            <button
-                                type="button"
-                                className="group/attach p-2 hover:bg-neutral-800 rounded-xl transition-colors flex items-center gap-1"
-                            >
-                                <Paperclip className="w-4 h-4 text-neutral-400 group-hover/attach:text-white transition-colors" />
-                                <span className="text-xs font-medium text-neutral-500 hidden group-hover/attach:inline transition-opacity">
-                                    Attach
-                                </span>
-                            </button>
+                            <PlusIcon className="w-5 h-5" strokeWidth={3} />
+                            New Sketch
                         </div>
-                        <div className="flex items-center gap-2">
-                            <button
-                                type="button"
-                                className="px-4 py-2 rounded-full text-xs font-medium text-neutral-400 transition-all border border-dashed border-neutral-700 hover:border-neutral-500 hover:bg-neutral-800 hover:text-neutral-200 flex items-center gap-1.5"
-                            >
-                                <PlusIcon className="w-3.5 h-3.5" />
-                                Project
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => sendMessage(value)}
-                                disabled={!value.trim() || isWaiting}
-                                className={cn(
-                                    "p-2.5 rounded-xl transition-all duration-200 flex items-center justify-center shadow-sm",
-                                    value.trim() && !isWaiting
-                                        ? "bg-white text-black hover:bg-neutral-200 hover:scale-[1.02]"
-                                        : "bg-neutral-800 text-neutral-600 cursor-not-allowed"
-                                )}
-                            >
-                                <ArrowUpIcon className="w-4 h-4" />
-                                <span className="sr-only">Send</span>
-                            </button>
+                    </button>
+                </div>
+
+                {/* Recents */}
+                <div className="flex-1 overflow-y-auto px-4 py-4 custom-scrollbar list-none space-y-2">
+                    <div className="text-xl font-heading text-pencil opacity-70 mb-2 px-2 -rotate-1">My Notes</div>
+                    {sessions.length === 0 ? (
+                        <div className="px-2 py-4 text-lg text-pencil/50 italic font-body">Blank sketchbook...</div>
+                    ) : (
+                        <div className="space-y-3">
+                            {sessions.map(s => (
+                                <button
+                                    key={s.id}
+                                    onClick={() => loadSession(s.id)}
+                                    className={cn(
+                                        "w-full text-left truncate px-4 py-2 border-[2px] transition-all flex items-center gap-2 text-lg hover:rotate-1",
+                                        activeSessionId === s.id 
+                                            ? "bg-accent text-white border-pencil shadow-hand-drawn" 
+                                            : "bg-white text-pencil border-pencil shadow-[2px_2px_0px_0px_#2d2d2d] hover:bg-muted"
+                                    )}
+                                    style={{ borderRadius: WOBBLY_RADIUS.card }}
+                                >
+                                    {s.title}
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                </div>
+
+                {/* User Banner Bottom */}
+                <div className="p-4 border-t-[3px] border-dashed border-pencil bg-muted/30">
+                    <div 
+                        className="flex items-center gap-3 px-4 py-3 bg-white border-[3px] border-pencil shadow-hand-drawn hover:rotate-1 cursor-pointer transition-transform"
+                        style={{ borderRadius: WOBBLY_RADIUS.container }}
+                    >
+                        <div className="w-10 h-10 border-[3px] border-pencil bg-postit flex items-center justify-center text-xl font-heading text-pencil shadow-[2px_2px_0px_0px_#2d2d2d]" style={{ borderRadius: WOBBLY_RADIUS.button }}>
+                            ME
+                        </div>
+                        <div className="flex flex-col">
+                            <span className="text-xl font-bold text-pencil leading-none">Creator</span>
+                            <span className="text-sm font-heading text-accent">Doodling...</span>
                         </div>
                     </div>
                 </div>
+            </div>
 
-                {messages.length === 0 && (
-                    <div className="flex flex-wrap items-center justify-center gap-3 mt-8 fade-in">
-                        <ActionButton
-                            icon={<MessageSquare className="w-4 h-4 text-neutral-400" />}
-                            label="من أنت؟"
-                            onClick={() => handleActionClick("من أنت؟")}
-                        />
-                        <ActionButton
-                            icon={<HelpCircle className="w-4 h-4 text-neutral-400" />}
-                            label="Who are you?"
-                            onClick={() => handleActionClick("Who are you?")}
-                        />
-                        <ActionButton
-                            icon={<Globe className="w-4 h-4 text-neutral-400" />}
-                            label="Qui es-tu ?"
-                            onClick={() => handleActionClick("Qui es-tu ?")}
-                        />
-                        <ActionButton
-                            icon={<MonitorIcon className="w-4 h-4 text-neutral-400" />}
-                            label="Landing Page"
-                            onClick={() => handleActionClick("Build a beautiful landing page with Tailwind")}
-                        />
-                        <ActionButton
-                            icon={<CircleUserRound className="w-4 h-4 text-neutral-400" />}
-                            label="Sign Up Form"
-                            onClick={() => handleActionClick("Create a modern authentication sign up form")}
-                        />
+            {/* Main Window */}
+            <div className="flex-1 flex flex-col h-full relative min-w-0">
+
+                {/* Mobile Top Header */}
+                <div className="md:hidden flex items-center justify-between p-4 sticky top-0 bg-paper z-30 border-b-[3px] border-pencil shadow-hand-drawn">
+                    <button onClick={() => setIsSidebarOpen(true)} className="p-2 -ml-2 text-pencil hover:text-accent transition-colors">
+                        <Menu className="w-6 h-6" strokeWidth={3} />
+                    </button>
+                    <span className="font-heading text-2xl text-pencil">amin-GPT</span>
+                    <button onClick={startNewChat} className="p-2 -mr-2 text-pencil hover:text-accent transition-colors">
+                        <MessageSquareText className="w-6 h-6" strokeWidth={3} />
+                    </button>
+                </div>
+
+                {/* Chat Area */}
+                {!activeSession ? (
+                    <div className="flex-1 flex flex-col items-center justify-center px-6 fade-in">
+                        <h1 className="text-5xl md:text-7xl font-heading text-pencil text-center tracking-tight mb-8 -rotate-2">
+                            What are we drawing today?
+                        </h1>
+                        <div className="flex flex-wrap items-center justify-center gap-4 fade-in mt-8 max-w-3xl">
+                            <ActionButton icon={<MessageSquare className="w-5 h-5" strokeWidth={2.5} />} label="من أنت؟" onClick={() => sendMessage("من أنت؟")} />
+                            <ActionButton icon={<HelpCircle className="w-5 h-5" strokeWidth={2.5} />} label="Who are you?" onClick={() => sendMessage("Who are you?")} />
+                            <ActionButton icon={<Globe className="w-5 h-5" strokeWidth={2.5} />} label="Qui es-tu ?" onClick={() => sendMessage("Qui es-tu ?")} />
+                            <ActionButton icon={<MonitorIcon className="w-5 h-5" strokeWidth={2.5} />} label="Landing Page" onClick={() => sendMessage("Build a beautiful landing page with Tailwind")} />
+                            <ActionButton icon={<CircleUserRound className="w-5 h-5" strokeWidth={2.5} />} label="Sign Up Form" onClick={() => sendMessage("Create a modern authentication sign up form")} />
+                        </div>
+                    </div>
+                ) : (
+                    <div className="flex-1 overflow-y-auto px-4 md:px-8 custom-scrollbar pb-40">
+                        <div className="max-w-4xl mx-auto space-y-8 pt-10 fade-in">
+                            {messages.map((msg, index) => (
+                                <div key={index} className={cn("flex w-full fade-slide-in relative", msg.role === "user" ? "justify-end" : "justify-start")}>
+                                    
+                                    {msg.role === "user" ? (
+                                        <div className="flex items-start gap-3 max-w-[85%] md:max-w-[75%]">
+                                            <div
+                                                dir={isArabicText(msg.content) ? "rtl" : "ltr"}
+                                                className="bg-postit text-pencil text-xl border-[3px] border-pencil shadow-hand-drawn px-6 py-4 rotate-1 z-10"
+                                                style={{ borderRadius: WOBBLY_RADIUS.userBubble }}
+                                            >
+                                                <div className="whitespace-pre-wrap leading-relaxed">
+                                                    {msg.content}
+                                                </div>
+                                            </div>
+                                            {/* Thumbtack Decoration */}
+                                            <div className="absolute -top-3 right-8 w-4 h-4 rounded-full bg-accent border-2 border-pencil shadow-[1px_1px_0px_#2d2d2d] z-20"></div>
+                                        </div>
+                                    ) : (
+                                        <div className="flex items-start gap-4 max-w-[95%] md:max-w-[85%]">
+                                            <div className="hidden md:flex flex-col items-center gap-1 mt-2 shrink-0">
+                                                <div className="w-10 h-10 bg-white border-[3px] border-pencil shadow-[2px_2px_0px_0px_#2d2d2d] flex items-center justify-center font-heading text-2xl -rotate-2" style={{ borderRadius: WOBBLY_RADIUS.button }}>
+                                                    A
+                                                </div>
+                                            </div>
+                                            <div
+                                                dir={isArabicText(msg.content) ? "rtl" : "ltr"}
+                                                className="bg-white text-pencil text-xl border-[3px] border-pencil shadow-hand-drawn px-6 py-5 -rotate-1 relative z-10"
+                                                style={{ borderRadius: WOBBLY_RADIUS.assistantBubble }}
+                                            >
+                                                {/* Tape Decoration */}
+                                                <div className="absolute -top-3 left-1/2 -translate-x-1/2 w-16 h-6 bg-muted/60 rotate-2"></div>
+                                                
+                                                <TypewriterText
+                                                    content={msg.content}
+                                                    isTyping={typingState?.sessionId === activeSessionId && typingState?.index === index}
+                                                    isFinalChunk={typingState?.isFinalChunk ?? true}
+                                                    onTick={() => messagesEndRef.current?.scrollIntoView({ behavior: "auto" })}
+                                                    onComplete={() => setTypingState(null)}
+                                                />
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
+                            
+                            {isWaiting && (
+                                <div className="flex justify-start w-full fade-slide-in">
+                                    <div className="flex items-start gap-4 max-w-[85%]">
+                                        <div className="hidden md:flex flex-col items-center gap-1 mt-2 shrink-0">
+                                            <div className="w-10 h-10 bg-white border-[3px] border-pencil shadow-[2px_2px_0px_0px_#2d2d2d] flex items-center justify-center font-heading text-2xl -rotate-2" style={{ borderRadius: WOBBLY_RADIUS.button }}>
+                                                A
+                                            </div>
+                                        </div>
+                                        <div 
+                                            className="bg-white text-pencil text-xl border-[3px] border-pencil shadow-hand-drawn px-6 py-5 -rotate-1"
+                                            style={{ borderRadius: WOBBLY_RADIUS.assistantBubble }}
+                                        >
+                                            <div className="flex gap-2 items-center justify-center h-6">
+                                                <div className="w-2.5 h-2.5 rounded-full bg-pencil animate-bounce border border-pencil" style={{ animationDelay: '0ms' }} />
+                                                <div className="w-2.5 h-2.5 rounded-full bg-pencil animate-bounce border border-pencil" style={{ animationDelay: '150ms' }} />
+                                                <div className="w-2.5 h-2.5 rounded-full bg-pencil animate-bounce border border-pencil" style={{ animationDelay: '300ms' }} />
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                            <div ref={messagesEndRef} className="h-4" />
+                        </div>
                     </div>
                 )}
+
+                {/* Input Container */}
+                <div className="p-4 md:p-6 w-full max-w-4xl mx-auto absolute bottom-0 left-1/2 -translate-x-1/2 bg-transparent z-40">
+                    <div 
+                        className="relative bg-white border-[3px] border-pencil shadow-hand-drawn focus-within:shadow-hand-drawn-heavy focus-within:-translate-y-1 transition-all duration-200 p-2"
+                        style={{ borderRadius: WOBBLY_RADIUS.input }}
+                    >
+                        <div className="flex flex-col relative z-10">
+                            <Textarea
+                                ref={textareaRef}
+                                value={value}
+                                onChange={(e) => handleTextareaContentChange(e.target.value)}
+                                onKeyDown={handleKeyDown}
+                                placeholder="Scribble something..."
+                                disabled={isWaiting}
+                                className={cn(
+                                    "w-full px-4 pt-3 pb-2 min-h-[60px]",
+                                    "resize-none bg-transparent border-none",
+                                    "text-pencil text-xl font-body leading-relaxed",
+                                    "focus:outline-none focus-visible:ring-0 focus-visible:ring-offset-0",
+                                    "placeholder:text-pencil/40"
+                                )}
+                                style={{ overflow: "hidden" }}
+                            />
+
+                            {TURNSTILE_SITE_KEY && (
+                                <div className="px-4">
+                                    <div ref={turnstileContainerRef} className="min-h-[65px]" />
+                                </div>
+                            )}
+
+                            {turnstileError && (
+                                <p className="px-4 pt-1 text-sm font-bold text-accent">{turnstileError}</p>
+                            )}
+
+                            <div className="flex items-center justify-between px-4 pb-2 pt-2">
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        type="button"
+                                        className="p-2 hover:bg-muted border-2 border-transparent hover:border-pencil hover:-rotate-6 transition-all flex items-center justify-center"
+                                        style={{ borderRadius: WOBBLY_RADIUS.button }}
+                                    >
+                                        <PlusIcon className="w-6 h-6 text-pencil" strokeWidth={2.5} />
+                                    </button>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => sendMessage(value)}
+                                        disabled={!value.trim() || isWaiting || !turnstileToken}
+                                        className={cn(
+                                            "px-5 py-2.5 transition-all duration-200 flex items-center justify-center border-[3px] border-pencil font-bold text-xl gap-2",
+                                            value.trim() && !isWaiting && turnstileToken
+                                                ? "bg-white text-pencil shadow-hand-drawn hover:bg-accent hover:text-white hover:-translate-y-1 hover:rotate-1 cursor-pointer"
+                                                : "bg-muted text-pencil/40 shadow-[2px_2px_0px_0px_#2d2d2d] cursor-not-allowed"
+                                        )}
+                                        style={{ borderRadius: WOBBLY_RADIUS.button }}
+                                    >
+                                        <span className="hidden sm:block">Send</span>
+                                        <ArrowUpIcon className="w-5 h-5" strokeWidth={3} />
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     );
@@ -338,10 +659,120 @@ function ActionButton({ icon, label, onClick }: ActionButtonProps) {
         <button
             type="button"
             onClick={onClick}
-            className="flex items-center gap-2 px-5 py-2.5 bg-[#141414] border border-neutral-800 hover:bg-neutral-800 hover:border-neutral-700 hover:scale-[1.02] active:scale-[0.98] rounded-full text-neutral-400 hover:text-white transition-all shadow-sm"
+            className="flex items-center gap-3 px-6 py-3 bg-white border-[3px] border-pencil shadow-hand-drawn hover:shadow-hand-drawn-hover text-pencil hover:bg-accent hover:text-white transition-all transform hover:-translate-y-1 hover:-rotate-1"
+            style={{ borderRadius: WOBBLY_RADIUS.button }}
         >
             {icon}
-            <span className="text-xs font-semibold tracking-wide">{label}</span>
+            <span className="text-xl font-bold font-body">{label}</span>
         </button>
     );
+}
+
+function SingleCodeBlock({ code, lang }: { code: string, lang: string }) {
+    const codeRef = useRef<HTMLElement>(null);
+
+    useEffect(() => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const win = window as any;
+        if (codeRef.current && win.Prism) {
+            codeRef.current.textContent = code;
+            win.Prism.highlightElement(codeRef.current);
+        } else if (codeRef.current) {
+            codeRef.current.textContent = code;
+        }
+    }, [code, lang]);
+
+    return (
+        <div 
+            className="my-6 border-[3px] border-pencil shadow-hand-drawn overflow-hidden bg-white relative rotate-1 hover:rotate-0 transition-transform"
+            style={{ borderRadius: WOBBLY_RADIUS.card }}
+        >
+            {/* Top Bar simulating a cut out piece of paper */}
+            <div className="flex items-center justify-between px-5 py-3 border-b-[3px] border-pencil bg-muted">
+                <span className="text-lg font-heading text-pencil tracking-wide uppercase">{lang}</span>
+                <button
+                    onClick={() => navigator.clipboard.writeText(code)}
+                    className="text-lg font-bold text-pencil hover:text-secondary transition-colors flex items-center gap-2 hover:scale-110"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></svg>
+                    Copy
+                </button>
+            </div>
+            {/* Code Content */}
+            <pre className="!m-0 p-5 text-[15px] overflow-x-auto text-pencil custom-scrollbar font-mono bg-paper/50">
+                <code ref={codeRef} className={`language-${lang.toLowerCase() || 'javascript'}`} />
+            </pre>
+        </div>
+    );
+}
+
+function FormattedOutput({ text }: { text: string }) {
+    const parts = text.split(/(```[\s\S]*?(?:```|$))/g);
+
+    return (
+        <div className="space-y-4">
+            {parts.map((part, index) => {
+                if (part.startsWith('```')) {
+                    const cleanPart = part.slice(3).replace(/```$/, '');
+                    const lines = cleanPart.split('\n');
+                    const lang = lines[0].trim() || "code";
+                    const codeBlock = lines.slice(1).join('\n');
+
+                    return <SingleCodeBlock key={index} code={codeBlock} lang={lang} />;
+                }
+
+                if (!part.trim()) return null;
+                const isRtl = isArabicText(part);
+                return <div key={index} dir={isRtl ? "rtl" : "ltr"} className={cn("whitespace-pre-wrap leading-relaxed text-xl", isRtl && "text-right")}>{part}</div>;
+            })}
+        </div>
+    );
+}
+
+function TypewriterText({ content, isTyping, isFinalChunk, onTick, onComplete }: { content: string, isTyping: boolean, isFinalChunk: boolean, onTick?: () => void, onComplete?: () => void }) {
+    const [displayed, setDisplayed] = useState(isTyping ? "" : content);
+
+    const contentRef = useRef(content);
+    const isFinalRef = useRef(isFinalChunk);
+    const onTickRef = useRef(onTick);
+    const onCompleteRef = useRef(onComplete);
+
+    useEffect(() => {
+        contentRef.current = content;
+        isFinalRef.current = isFinalChunk;
+        onTickRef.current = onTick;
+        onCompleteRef.current = onComplete;
+    });
+
+    useEffect(() => {
+        if (!isTyping) {
+            setDisplayed(contentRef.current);
+            return;
+        }
+
+        let i = displayed.length;
+        if (i > contentRef.current.length) { i = 0; setDisplayed(""); }
+
+        const interval = setInterval(() => {
+            const currentContent = contentRef.current;
+            
+            if (i < currentContent.length) {
+                const diff = currentContent.length - i;
+                const chunk = diff > 100 ? Math.ceil(diff / 10) : 3;
+
+                i += chunk;
+                if (i > currentContent.length) i = currentContent.length;
+                setDisplayed(currentContent.substring(0, i));
+
+                if (onTickRef.current) onTickRef.current();
+            } else if (isFinalRef.current) {
+                clearInterval(interval);
+                if (onCompleteRef.current) onCompleteRef.current();
+            }
+        }, 15);
+
+        return () => clearInterval(interval);
+    }, [isTyping]);
+
+    return <FormattedOutput text={displayed} />;
 }

@@ -9,4 +9,17 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  server: {
+    proxy: {
+      '/.netlify/functions/chat': {
+        target: 'https://integrate.api.nvidia.com',
+        changeOrigin: true,
+        rewrite: () => '/v1/chat/completions',
+        headers: {
+          'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}`,
+          'Accept': 'text/event-stream'
+        }
+      }
+    }
+  }
 })
